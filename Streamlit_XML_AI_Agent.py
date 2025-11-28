@@ -3,13 +3,39 @@ import xml.etree.ElementTree as ET
 import pandas as pd
 from io import BytesIO
 import os
+st.sidebar.title("🔧 AI Configuration")
 
-# Try to import ai_engine if present (user provided)
-try:
-    from ai_engine import AIEngine
-    llm = AIEngine()
-except Exception:
-    llm = None
+if llm is None:
+    st.sidebar.error("❌ AI engine not loaded.")
+else:
+
+    # UI Helper to mask key
+    def mask(key):
+        return f"****{key[-4:]}" if key else "None"
+
+    # Status Display
+    st.sidebar.subheader("API Status")
+
+    openai_status = "🟢 Connected" if llm.openai_key else "🔴 Missing"
+    grok_status = "🟢 Connected" if llm.grok_key else "🔴 Missing"
+
+    st.sidebar.write(f"**OpenAI:** {openai_status} | {mask(llm.openai_key)}")
+    st.sidebar.write(f"**Grok:** {grok_status} | {mask(llm.grok_key)}")
+
+    # Test Button
+    if st.sidebar.button("🔍 Test Connection"):
+        result = llm.test_connection()
+
+        if result.get("openai"):
+            st.sidebar.success("🟢 OpenAI Responding")
+        else:
+            st.sidebar.error("🔴 OpenAI Failed")
+
+        if result.get("grok"):
+            st.sidebar.success("🟢 Grok Responding")
+        else:
+            st.sidebar.error("🔴 Grok Failed")
+
 
 st.set_page_config(page_title="XML AI Mapper", page_icon="🤖", layout="wide")
 st.title("🔍 XML Field Mapper (AI Powered)")
