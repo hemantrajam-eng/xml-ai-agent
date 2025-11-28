@@ -8,3 +8,5 @@ torch
 groq
 python-dotenv
 pandas
+requests
+xlsxwriter

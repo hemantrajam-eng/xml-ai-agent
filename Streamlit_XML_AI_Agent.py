@@ -1,162 +1,156 @@
 import streamlit as st
+import xml.etree.ElementTree as ET
 import pandas as pd
-from openai import OpenAI
-from lxml import etree
-from io import BytesIO
+import base64
+from ai_engine import AIEngine
 
-
-# ---------------- UI Styling ---------------- #
-st.set_page_config(page_title="XML Smart Cleaner & Mapper", page_icon="🤖", layout="wide")
-
-st.markdown("""
-<style>
-    .main {background-color: #f9fafc;}
-    .title {font-size: 32px; font-weight: bold; color:#333;}
-    .sub {font-size:14px; color:#777;}
-    .stButton > button {border-radius:10px; padding:10px 20px; font-weight:bold;}
-    .footer {text-align:center; padding:12px; font-size:12px; color:#aaa;}
-</style>
-""", unsafe_allow_html=True)
-
-# ---------------- Header ---------------- #
-st.markdown('<div class="title">🧠 XML AI Assistant (Pro Mode)</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub">Upload → Clean → Analyze → AI Mapping → Export</div>', unsafe_allow_html=True)
-st.write("---")
-
-# ---------------- Sidebar ---------------- #
-st.sidebar.header("⚙️ Settings")
-
-llm_provider = st.sidebar.selectbox(
-    "AI Model Provider", ["OpenAI", "Groq"]
+# ---------------- UI SETUP ----------------
+st.set_page_config(
+    page_title="XML AI Mapper",
+    page_icon="🤖",
+    layout="wide"
 )
 
-api_key = st.sidebar.text_input("Enter API Key", type="password")
+st.title("🔍 XML Field Mapper (AI Powered)")
+st.caption("Upload → Clean → Compare → Ask AI → Export")
 
-model_name = "gpt-4o-mini" if llm_provider == "OpenAI" else "llama-3.2-90b-vision-preview"
+# Sidebar AI Info
+llm = AIEngine()
+st.sidebar.success(f"🧠 AI Engine Active: **{llm.active_model.upper()}**")
 
-client = None
-if api_key:
-    if llm_provider == "OpenAI":
-        client = OpenAI(api_key=api_key)
-    else:
-        from groq import Groq
-        client = Groq(api_key=api_key)
+# ---------------- XML FUNCTIONS ----------------
+def parse_xml(xml_text):
+    try:
+        return ET.fromstring(xml_text)
+    except Exception as e:
+        st.error(f"❌ Invalid XML: {e}")
+        return None
 
+def normalize_option_text(option):
+    names = option.get('name', '').replace(" ", "").split(",")
+    values = option.get('value', '').replace(" ", "").split(",")
+    return names, values
 
-# ---------------- Main Panels ---------------- #
+def merge_dependents(xml_root):
+    grouped = {}
 
-col1, col2 = st.columns([1, 1.5])
+    for opt in xml_root.findall("option"):
+        names, values = normalize_option_text(opt)
+        deps = [(d.get("id"), d.get("name")) for d in opt.findall("dependent")]
 
-with col1:
-    st.subheader("📂 Upload XML")
-    uploaded = st.file_uploader("Select XML File", type=["xml"])
+        deps_key = tuple(sorted(deps))
 
-    xml_content = None
-    cleaned_xml = None
+        if deps_key not in grouped:
+            grouped[deps_key] = {"names": set(), "values": set(), "dependents": deps}
 
-    if uploaded:
-        xml_content = uploaded.read().decode("utf-8")
-        st.code(xml_content, language="xml")
+        grouped[deps_key]["names"].update(names)
+        grouped[deps_key]["values"].update(values)
 
-    # Clean Button
-    if st.button("🧹 Clean & Normalize XML", disabled=(not uploaded)):
-        with st.spinner("Cleaning XML..."):
-            try:
-                root = etree.fromstring(xml_content)
-                cleaned_xml = etree.tostring(root, pretty_print=True).decode("utf-8")
-                st.success("XML successfully normalized! 🎯")
-            except Exception as e:
-                st.error(f"❌ Parsing error: {e}")
+    return grouped
 
+def generate_clean_xml(original_root):
+    grouped = merge_dependents(original_root)
 
-with col2:
-    st.subheader("🔍 Cleaned XML Output")
+    new_root = ET.Element("dependents", original_root.attrib)
 
-    if cleaned_xml:
+    for entry in grouped.values():
+        opt = ET.SubElement(new_root, "option")
+        opt.set("name", ",".join(sorted(entry["names"])))
+        opt.set("value", ",".join(sorted(entry["values"])))
+
+        for dep_id, dep_name in entry["dependents"]:
+            ET.SubElement(
+                opt, "dependent", {
+                    "type": "0",
+                    "id": dep_id,
+                    "name": dep_name,
+                    "reset": "false",
+                    "retainonedit": "false"
+                }
+            )
+
+    return ET.tostring(new_root, encoding="unicode")
+
+def suggest_mapping(xml_text):
+    prompt = f"""
+Analyze the following XML structure and produce:
+
+- Grouping logic summary
+- Duplicate detection
+- Suggested optimized field relationships
+
+Return format:
+1️⃣ Summary  
+2️⃣ Recommendations  
+3️⃣ Clean Mapping (JSON or table)
+
+XML:
+{xml_text}
+"""
+    return llm.generate(prompt)
+
+# ---------------- FILE UPLOAD AREA ----------------
+
+uploaded_file = st.file_uploader("📁 Upload XML File", type=["xml"])
+
+xml_input_col, cleaned_xml_col, compare_col = st.columns(3)
+
+xml_text = None
+cleaned_xml = None
+
+if uploaded_file:
+    xml_text = uploaded_file.read().decode("utf-8")
+    original_root = parse_xml(xml_text)
+
+    with xml_input_col:
+        st.subheader("📄 Original XML")
+        st.code(xml_text, language="xml")
+
+    # Clean XML
+    cleaned_xml = generate_clean_xml(original_root)
+
+    with cleaned_xml_col:
+        st.subheader("🧹 Cleaned XML")
         st.code(cleaned_xml, language="xml")
-        st.download_button("⬇️ Download Cleaned XML", cleaned_xml, "cleaned.xml")
 
-    st.write("---")
+    # Comparison Table
+    with compare_col:
+        st.subheader("🔄 Before vs After Count")
+        df = pd.DataFrame([
+            ["Option Count", len(original_root.findall('option')), cleaned_xml.count("<option")],
+            ["Dependent Count", xml_text.count("<dependent"), cleaned_xml.count("<dependent")]
+        ], columns=["Metric", "Original", "Cleaned"])
 
-    # 🔥 AI Mapping Suggestion
-    st.subheader("🤖 AI Mapping & Insights")
+        st.dataframe(df)
 
-    if st.button("🚀 Generate Smart Mapping (AI)", disabled=(client is None or cleaned_xml is None)):
-        with st.spinner("AI analyzing your XML structure 🚧..."):
-            prompt = f"""
-            You are an XML workflow analyzer. Based on the given XML, identify:
+# ---------------- AI MAPPING BUTTON ----------------
+st.divider()
 
-            - Duplicate option groups
-            - Similar dependency sets
-            - Recommended merges
-            - Suggested final cleaned output XML
+if st.button("🤖 Suggest Mapping (AI)"):
+    if not uploaded_file:
+        st.warning("⚠️ Upload an XML file first.")
+    else:
+        with st.spinner("🔍 AI analyzing structure..."):
+            result = suggest_mapping(cleaned_xml)
+        st.success("📌 AI Mapping Suggestion Ready")
+        st.code(result, language="markdown")
 
-            XML:
-            {cleaned_xml}
-            """
+# ---------------- DOWNLOAD CLEANED XML ----------------
+if cleaned_xml:
+    st.download_button(
+        label="📥 Download Clean XML",
+        data=cleaned_xml,
+        file_name="cleaned_output.xml",
+        mime="text/xml"
+    )
 
-            try:
-                response = client.chat.completions.create(
-                    model=model_name,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-
-                ai_output = response.choices[0].message.content
-                st.success("AI Mapping Completed 🎯")
-                st.markdown(f"### 📌 AI Recommendation\n\n{ai_output}")
-
-                st.download_button("💾 Download AI Report", ai_output, "AI_Mapping_Summary.txt")
-
-            except Exception as e:
-                st.error(f"❌ AI Error: {e}")
-
-
-# ---------------- Footer ---------------- #
-st.markdown('<div class="footer">Made with ❤️ using Streamlit + AI</div>', unsafe_allow_html=True)
-
-# ---------------- Comparison & Export Tools ---------------- #
-st.write("---")
-st.subheader("📊 Comparison View")
-
-if xml_content or cleaned_xml or "ai_output" in locals():
-
-    compare_tabs = st.tabs(["📄 Original XML", "🧼 Cleaned XML", "🤖 AI Suggested Output"])
-
-    with compare_tabs[0]:
-        st.code(xml_content or "No file uploaded", language="xml")
-
-    with compare_tabs[1]:
-        st.code(cleaned_xml or "Not processed yet", language="xml")
-
-    with compare_tabs[2]:
-        st.markdown(ai_output if "ai_output" in locals() else "_Run AI mapping first._")
-
-
-    # ---------- Excel Export Button ---------- #
-    st.write("---")
-    st.subheader("📁 Export Mapping to Excel")
-
-    # Convert to table for Excel if AI structured block exists
-    df = pd.DataFrame({
-        "Version": ["Original", "Cleaned", "AI Suggested"],
-        "Content": [xml_content, cleaned_xml, ai_output if "ai_output" in locals() else None]
-    })
-
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df.to_excel(writer, index=False, sheet_name="XML Comparison")
-
-        # Add pretty formatting
-        workbook = writer.book
-        worksheet = writer.sheets["XML Comparison"]
-        wrap_format = workbook.add_format({'text_wrap': True, 'valign': 'top'})
-
-        worksheet.set_column("A:A", 20)
-        worksheet.set_column("B:B", 120, wrap_format)
+# ---------------- EXPORT TO EXCEL ----------------
+if cleaned_xml:
+    df_export = pd.DataFrame({"Cleaned XML": [cleaned_xml]})
+    excel_data = df_export.to_excel(index=False, sheet_name="XML", engine="xlsxwriter")
 
     st.download_button(
-        label="⬇ Download Comparison Excel",
-        data=output.getvalue(),
-        file_name="XML_AI_Comparison.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        label="📊 Export to Excel",
+        data=excel_data,
+        file_name="mapped_output.xlsx"
     )
