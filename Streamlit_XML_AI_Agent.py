@@ -183,20 +183,25 @@ if uploaded and cleaned_xml:
 if cleaned_xml:
     st.download_button("📥 Download Clean XML", cleaned_xml, file_name="cleaned_dependents.xml", mime="text/xml")
 
-# ------------------- Export mapping to Excel -------------------
-if cleaned_xml and original_root:
+# ------------------- Export Mapping to Excel (Expanded per Option) -------------------
+if cleaned_xml:
     st.subheader("📊 Export Option Mapping to Excel")
 
-    # Parse cleaned XML into ElementTree
     root = ET.fromstring(cleaned_xml)
 
     mapping_rows = []
-    for idx, opt in enumerate(root.findall("option"), start=1):
-        group_id = f"G{idx}"  # simple sequential group ID
-        option_name = opt.get("name", "")
-        option_value = opt.get("value", "")
+    group_number = 1
 
-        # Collect dependents as id:name joined by semicolon
+    for opt in root.findall("option"):
+
+        # Group ID stays same for all exploded rows from this <option>
+        group_id = f"G{group_number}"  
+
+        # Split multi names & values
+        names = opt.get("name", "").split(",")
+        values = opt.get("value", "").split(",")
+
+        # Collect dependents once
         dependents = []
         for d in opt.findall("dependent"):
             dep_id = d.get("id", "")
@@ -204,12 +209,31 @@ if cleaned_xml and original_root:
             dependents.append(f"{dep_id}:{dep_name}")
         dependents_str = ";".join(dependents)
 
-        mapping_rows.append([idx, group_id, option_name, option_value, dependents_str])
+        # Expand rows → match value count safely
+        for idx, name in enumerate(names):
+            name = name.strip()
+
+            # If values fewer than names → reuse last
+            if idx < len(values):
+                val = values[idx].strip()
+            else:
+                val = values[-1].strip() if values else ""
+
+            mapping_rows.append([
+                len(mapping_rows) + 1,
+                group_id,
+                name,
+                val,
+                dependents_str
+            ])
+
+        group_number += 1
 
     # Create DataFrame
-    df_export = pd.DataFrame(mapping_rows, columns=["Sr No", "Group ID", "Option Name", "Option Value", "Dependents"])
+    df_export = pd.DataFrame(mapping_rows, columns=[
+        "Sr No", "Group ID", "Option Name", "Option Value", "Dependents"
+    ])
 
-    # Export to Excel buffer
     excel_buffer = BytesIO()
     df_export.to_excel(excel_buffer, index=False, sheet_name="Mapping")
     excel_buffer.seek(0)
@@ -220,7 +244,6 @@ if cleaned_xml and original_root:
         file_name="option_mapping.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-
 
 # AI Suggest mapping (if ai_engine present)
 st.markdown("---")
