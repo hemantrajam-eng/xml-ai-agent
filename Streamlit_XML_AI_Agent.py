@@ -183,19 +183,44 @@ if uploaded and cleaned_xml:
 if cleaned_xml:
     st.download_button("📥 Download Clean XML", cleaned_xml, file_name="cleaned_dependents.xml", mime="text/xml")
 
-# Export to Excel: place cleaned xml in a cell (human-review)
-if cleaned_xml:
-    df_export = pd.DataFrame({"Cleaned XML": [cleaned_xml]})
+# ------------------- Export mapping to Excel -------------------
+if cleaned_xml and original_root:
+    st.subheader("📊 Export Option Mapping to Excel")
+
+    # Parse cleaned XML into ElementTree
+    root = ET.fromstring(cleaned_xml)
+
+    mapping_rows = []
+    for idx, opt in enumerate(root.findall("option"), start=1):
+        group_id = f"G{idx}"  # simple sequential group ID
+        option_name = opt.get("name", "")
+        option_value = opt.get("value", "")
+
+        # Collect dependents as id:name joined by semicolon
+        dependents = []
+        for d in opt.findall("dependent"):
+            dep_id = d.get("id", "")
+            dep_name = d.get("name", "")
+            dependents.append(f"{dep_id}:{dep_name}")
+        dependents_str = ";".join(dependents)
+
+        mapping_rows.append([idx, group_id, option_name, option_value, dependents_str])
+
+    # Create DataFrame
+    df_export = pd.DataFrame(mapping_rows, columns=["Sr No", "Group ID", "Option Name", "Option Value", "Dependents"])
+
+    # Export to Excel buffer
     excel_buffer = BytesIO()
-    # Use DataFrame.to_excel directly to buffer (no explicit engine)
-    df_export.to_excel(excel_buffer, index=False, sheet_name="XML")
+    df_export.to_excel(excel_buffer, index=False, sheet_name="Mapping")
     excel_buffer.seek(0)
+
     st.download_button(
-        "📊 Export to Excel",
+        "📥 Download Mapping Excel",
         data=excel_buffer,
-        file_name="cleaned_dependents.xlsx",
+        file_name="option_mapping.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
 
 # AI Suggest mapping (if ai_engine present)
 st.markdown("---")
