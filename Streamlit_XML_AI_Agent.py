@@ -5,6 +5,12 @@ from io import BytesIO
 import os
 st.sidebar.title("🔧 AI Configuration")
 
+try:
+    from ai_engine import AIEngine
+    llm = AIEngine()
+except Exception:
+    llm = None
+    
 if llm is None:
     st.sidebar.error("❌ AI engine not loaded.")
 else:
