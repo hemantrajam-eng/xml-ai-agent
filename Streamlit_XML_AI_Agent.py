@@ -299,10 +299,12 @@ Cleaned XML:
 """
                     ai_text = llm.generate(prompt)
                     st.subheader("AI Output")
-                    st.code(ai_text)
+                    if "⚠️" in ai_text or "Error" in ai_text:
+                        st.error(ai_text)
+                    else:
+                        st.code(ai_text)
                 except Exception as e:
                     st.error(f"AI call error: {e}")
 
 
 st.caption("Built by IBL Digital Team • AI XML Mapping Assistant 🔧🚀")
-

@@ -34,33 +34,34 @@ class AIEngine:
             results["grok"] = False
 
         return results
+        
+        
     def generate(self, prompt: str):
 
-        # --- Try OpenAI first ---
-        if self.openai_client:
-            try:
-                response = self.openai_client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                self.active_model = "OpenAI GPT-4o-mini"
-                return response.choices[0].message.content
+    # --- Try OpenAI first ---
+    if self.openai_client:
+        try:
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4o-mini-latest",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            self.active_model = "OpenAI GPT-4o-mini-latest"
+            return response.choices[0].message.content
 
-            except Exception as e:
-                # fallback if quota exceeded or invalid model
-                print("OpenAI error -> switching to Grok:", e)
+        except Exception as e:
+            print("OpenAI error -> switching to Grok:", e)
 
-        # --- Fallback to Grok ---
-        if self.grok_client:
-            try:
-                response = self.grok_client.chat.completions.create(
-                    model="grok-2",
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                self.active_model = "Grok-2"
-                return response.choices[0].message.content
+    # --- Fallback to Grok ---
+    if self.grok_client:
+        try:
+            response = self.grok_client.chat.completions.create(
+                model="mixtral-8x7b-32768",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            self.active_model = "Grok Mixtral-8x7b-32768"
+            return response.choices[0].message.content
 
-            except Exception as e:
-                return f"⚠️ AI error: {e}"
+        except Exception as e:
+            return f"⚠️ Grok error: {e}"
 
-        return "❌ No valid AI model available. Please configure API keys."
+    return "❌ No valid AI model available. Please configure API keys."
