@@ -8,7 +8,8 @@ st.sidebar.title("🔧 AI Configuration")
 try:
     from ai_engine import AIEngine
     llm = AIEngine()
-except Exception:
+except Exception as e:
+    st.error(f"⚠️ Import/Init Error: {e}")
     llm = None
     
 if llm is None:
@@ -308,3 +309,4 @@ Cleaned XML:
 
 
 st.caption("Built by IBL Digital Team • AI XML Mapping Assistant 🔧🚀")
+
