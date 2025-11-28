@@ -152,15 +152,19 @@ original_root = None
 
 if uploaded:
     xml_text = uploaded.read().decode("utf-8")
-    st.subheader("📄 Original XML")
-    st.code(xml_text, language="xml")
+    st.subheader("📄 Original XML Preview")
+    st.code("\n".join(xml_text.splitlines()[:10]) + ("\n..." if len(xml_text.splitlines())>10 else ""), language="xml")
+
 
     # parse and clean
     try:
         original_root = ET.fromstring(xml_text)
         cleaned_xml = generate_clean_xml_from_root(original_root)
-        st.subheader("🧼 Cleaned / Optimized XML")
-        st.code(cleaned_xml, language="xml")
+        st.subheader("🧼 Cleaned / Optimized XML Preview (Max 50 lines)")
+        cleaned_lines = cleaned_xml.splitlines()
+        preview_lines = cleaned_lines[:50]
+        st.code("\n".join(preview_lines) + ("\n..." if len(cleaned_lines) > 50 else ""), language="xml")
+
         st.success("✅ Cleaned output generated (per-name aggregation & grouping by identical dependents).")
 
     except Exception as e:
