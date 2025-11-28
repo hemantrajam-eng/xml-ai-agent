@@ -2,6 +2,7 @@ import streamlit as st
 import xml.etree.ElementTree as ET
 import pandas as pd
 import base64
+import io
 from ai_engine import AIEngine
 
 # ---------------- UI SETUP ----------------
@@ -143,14 +144,19 @@ if cleaned_xml:
         file_name="cleaned_output.xml",
         mime="text/xml"
     )
-
 # ---------------- EXPORT TO EXCEL ----------------
+
 if cleaned_xml:
     df_export = pd.DataFrame({"Cleaned XML": [cleaned_xml]})
-    excel_data = df_export.to_excel(index=False, sheet_name="XML", engine="xlsxwriter")
+
+    # Create in-memory buffer (Streamlit-safe)
+    excel_buffer = io.BytesIO()
+    df_export.to_excel(excel_buffer, index=False, sheet_name="XML")  # FIXED: removed engine arg
+    excel_buffer.seek(0)  # Reset pointer before download
 
     st.download_button(
         label="📊 Export to Excel",
-        data=excel_data,
-        file_name="mapped_output.xlsx"
+        data=excel_buffer,
+        file_name="mapped_output.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
