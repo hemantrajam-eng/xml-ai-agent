@@ -1,131 +1,121 @@
 import streamlit as st
-import xmltodict
-from bs4 import BeautifulSoup
-from collections import defaultdict
+import xml.etree.ElementTree as ET
+import os
 from openai import OpenAI
-import json
+from groq import Groq
 
-st.set_page_config(page_title="XML Optimizer AI", layout="wide")
+st.set_page_config(page_title="XML AI Agent", page_icon="🤖")
 
-# ---------------------------
-# CONFIG & API KEY SECTION
-# ---------------------------
+# -------------------------
+# SECRET KEYS
+# -------------------------
+OPENAI_KEY = st.secrets.get("OPENAI_API_KEY", "")
+GROK_KEY = st.secrets.get("GROK_API_KEY", "")
 
-api_key = st.sidebar.text_input("🔑 Enter OpenAI API Key", type="password")
+# -------------------------
+# Initialize Clients Only If Keys Exist
+# -------------------------
 
-use_ai = st.sidebar.checkbox("🤖 Enable AI Reasoning", value=True)
+openai_client = None
+if OPENAI_KEY:
+    openai_client = OpenAI(api_key=OPENAI_KEY)
 
+grok_client = None
+if GROK_KEY:
+    grok_client = Groq(api_key=GROK_KEY)
 
-# ---------------------------
-# PROCESSING FUNCTION
-# ---------------------------
+# -------------------------
+# AI CALL FUNCTIONS
+# -------------------------
 
-def dedupe_xml(xml_content):
-    soup = BeautifulSoup(xml_content, 'xml')
-    options = soup.find_all('option')
-
-    grouped = defaultdict(lambda: {"names": [], "values": [], "deps": set()})
-
-    for op in options:
-        names = [n.strip() for n in op["name"].split(",")]
-        values = [v.strip() for v in op["value"].split(",")]
-        deps = [str(dep) for dep in op.find_all("dependent")]
-
-        for name, value in zip(names, values):
-            grouped[frozenset(deps)]["names"].append(name)
-            grouped[frozenset(deps)]["values"].append(value)
-            grouped[frozenset(deps)]["deps"] = deps
-
-    # Build cleaned XML
-    base = soup.find("dependents")
-    base.clear()
-
-    for key, info in grouped.items():
-        op = soup.new_tag("option")
-        op["name"] = ",".join(sorted(set(info["names"])))
-        op["value"] = ",".join(sorted(set(info["values"])))
-
-        for dep_xml in info["deps"]:
-            dep_soup = BeautifulSoup(dep_xml, "xml").dependent
-            op.append(dep_soup)
-
-        base.append(op)
-
-    return soup.prettify()
+def ask_openai(prompt):
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"⚠ Error (OpenAI): {str(e)}"
 
 
-# ---------------------------
-# AI Suggestion Function
-# ---------------------------
-
-def ask_ai(original, cleaned):
-    if not api_key:
-        return "⚠️ API key missing. Please enter your key."
-
-    client = OpenAI(api_key=api_key)
-
-    prompt = f"""
-Act as an XML rules optimizer expert. Compare the following:
-
-Original XML:
-{original}
-
-Cleaned XML:
-{cleaned}
-
-Explain in bullet points:
-- What improvements were made?
-- What patterns were detected?
-- Any optimization still possible?
-"""
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    return response.choices[0].message.content
+def ask_grok(prompt):
+    try:
+        response = grok_client.chat.completions.create(
+            model="grok-1",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"⚠ Error (Grok): {str(e)}"
 
 
-# ---------------------------
-# UI
-# ---------------------------
+def ask_ai(prompt, provider):
+    if provider == "Grok":
+        if not GROK_KEY:
+            return "❌ Grok API key missing."
+        reply = ask_grok(prompt)
+        if "⚠ Error" in reply:  # fallback
+            reply += "\n🔁 Fallback triggered → Trying OpenAI..."
+            reply += "\n\n" + ask_openai(prompt)
+        return reply
 
-st.title("🧠 XML Rule Optimizer + AI Reasoning")
+    elif provider == "OpenAI":
+        if not OPENAI_KEY:
+            return "❌ OpenAI API key missing."
+        return ask_openai(prompt)
 
-uploaded = st.file_uploader("📂 Upload XML File", type=['xml'])
 
-if uploaded:
+# -------------------------
+# XML Processing
+# -------------------------
 
-    original_xml = uploaded.read().decode("utf-8")
+def clean_xml(xml_string):
+    try:
+        tree = ET.ElementTree(ET.fromstring(xml_string))
+        return ET.tostring(tree.getroot(), encoding="unicode")
+    except:
+        return "❌ Invalid XML format"
 
-    st.subheader("📌 Raw XML Preview")
-    st.code(original_xml, language="xml")
 
-    cleaned_xml = dedupe_xml(original_xml)
+# -------------------------
+# STREAMLIT UI
+# -------------------------
 
-    st.success("✨ XML Optimization Complete!")
+st.title("🤖 XML Cleanup & Mapping AI Agent")
 
-    st.subheader("📌 Cleaned Output")
-    st.code(cleaned_xml, language="xml")
+ai_model = st.radio("Select AI Model:", ["OpenAI", "Grok"], horizontal=True)
 
-    # Download Button
-    st.download_button(
-        label="⬇️ Download Cleaned XML",
-        data=cleaned_xml,
-        file_name="cleaned_output.xml",
-        mime="text/xml"
-    )
+uploaded_file = st.file_uploader("📁 Upload XML File", type=["xml"])
 
-    # AI Insight Panel
-    if use_ai and api_key:
-        st.subheader("🤖 AI Insight & Suggestions")
-        with st.spinner("Thinking..."):
-            ai_response = ask_ai(original_xml, cleaned_xml)
+xml_text = ""
+if uploaded_file:
+    xml_text = uploaded_file.read().decode("utf-8")
+    st.text_area("📄 XML Content", xml_text, height=300, key="raw_xml")
 
-        st.write(ai_response)
-    elif use_ai and not api_key:
-        st.warning("Enter OpenAI key to enable AI explanations 🔧")
+cleaned_xml = ""
 
-else:
-    st.info("📄 Upload XML to begin processing.")
+if st.button("✨ Clean XML"):
+    cleaned_xml = clean_xml(xml_text)
+    st.text_area("🧼 Cleaned XML Output", cleaned_xml, height=300, key="cleaned_xml")
+
+if st.button("🤖 Suggest Mapping (AI Powered)"):
+    if cleaned_xml:
+        with st.spinner("Thinking... 🤔"):
+            ai_response = ask_ai(f"Suggest structured mapping based on this XML:\n\n{cleaned_xml}", ai_model)
+            st.text_area("💡 AI Insight & Suggestions", ai_response, height=300)
+    else:
+        st.warning("Upload XML and clean it first.")
+
+# -------------------------
+# DOWNLOAD BUTTON
+# -------------------------
+
+if cleaned_xml:
+    st.download_button("⬇ Download Cleaned XML", cleaned_xml, file_name="cleaned_output.xml")
+
+# Footer
+st.markdown("---")
+st.caption("⚡ Powered by OpenAI + Grok Fusion Agent")
+
+
