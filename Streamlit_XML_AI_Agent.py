@@ -1,162 +1,176 @@
 import streamlit as st
 import xml.etree.ElementTree as ET
 import pandas as pd
-import base64
-import io
-from ai_engine import AIEngine
+from io import BytesIO
+import os
 
-# ---------------- UI SETUP ----------------
-st.set_page_config(
-    page_title="XML AI Mapper",
-    page_icon="🤖",
-    layout="wide"
-)
+# --- AI PROVIDERS ---
+from openai import OpenAI
+from groq import Groq
 
-st.title("🔍 XML Field Mapper (AI Powered)")
-st.caption("Upload → Clean → Compare → Ask AI → Export")
+# ---------- APP CONFIG ----------
+st.set_page_config(page_title="XML Optimizer AI", page_icon="⚙️", layout="wide")
 
-# Sidebar AI Info
-llm = AIEngine()
-st.sidebar.success(f"🧠 AI Engine Active: **{llm.active_model.upper()}**")
+st.markdown("""
+<h2>⚙️ XML Cleaner + Smart Mapper (AI Powered)</h2>
+<p style="color:gray;">Upload → Clean → Analyze → Export</p>
+""", unsafe_allow_html=True)
 
-# ---------------- XML FUNCTIONS ----------------
-def parse_xml(xml_text):
-    try:
-        return ET.fromstring(xml_text)
-    except Exception as e:
-        st.error(f"❌ Invalid XML: {e}")
-        return None
+# ---------- LOAD API KEYS ----------
+OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", None)
+GROK_API_KEY = st.secrets.get("GROK_API_KEY", None)
 
-def normalize_option_text(option):
-    names = option.get('name', '').replace(" ", "").split(",")
-    values = option.get('value', '').replace(" ", "").split(",")
-    return names, values
+openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+groq_client = Groq(api_key=GROK_API_KEY) if GROK_API_KEY else None
+
+# ---------- PARSING + MERGE LOGIC FIXED ----------
 
 def merge_dependents(xml_root):
-    grouped = {}
+
+    extracted = []
 
     for opt in xml_root.findall("option"):
-        names, values = normalize_option_text(opt)
-        deps = [(d.get("id"), d.get("name")) for d in opt.findall("dependent")]
+        name_list = set(opt.get("name", "").replace(" ", "").split(","))
+        value_list = set(opt.get("value", "").replace(" ", "").split(","))
 
-        deps_key = tuple(sorted(deps))
+        dependents = {(d.get("id"), d.get("name")) for d in opt.findall("dependent")}
 
-        if deps_key not in grouped:
-            grouped[deps_key] = {"names": set(), "values": set(), "dependents": deps}
+        extracted.append({
+            "names": name_list,
+            "values": value_list,
+            "dependents": dependents
+        })
 
-        grouped[deps_key]["names"].update(names)
-        grouped[deps_key]["values"].update(values)
+    # ---- SMART MERGING ----
+    merged = []
 
-    return grouped
+    for item in extracted:
+        merged_flag = False
+
+        for grp in merged:
+            # Merge if dependents overlap at least 1 field
+            if grp["dependents"].intersection(item["dependents"]):
+                grp["names"].update(item["names"])
+                grp["values"].update(item["values"])
+                grp["dependents"].update(item["dependents"])
+                merged_flag = True
+                break
+
+        if not merged_flag:
+            merged.append(item)
+
+    # Cleanup + sorting
+    for grp in merged:
+        grp["names"] = sorted(grp["names"])
+        grp["values"] = sorted(grp["values"], key=lambda x: int(x) if x.isdigit() else x)
+        grp["dependents"] = sorted(list(grp["dependents"]))
+
+    return merged
+
 
 def generate_clean_xml(original_root):
     grouped = merge_dependents(original_root)
 
     new_root = ET.Element("dependents", original_root.attrib)
 
-    for entry in grouped.values():
+    for entry in grouped:
         opt = ET.SubElement(new_root, "option")
-        opt.set("name", ",".join(sorted(entry["names"])))
-        opt.set("value", ",".join(sorted(entry["values"])))
+        opt.set("name", ",".join(entry["names"]))
+        opt.set("value", ",".join(entry["values"]))
 
-        for dep_id, dep_name in entry["dependents"]:
-            ET.SubElement(
-                opt, "dependent", {
-                    "type": "0",
-                    "id": dep_id,
-                    "name": dep_name,
-                    "reset": "false",
-                    "retainonedit": "false"
-                }
-            )
+        for dep_id, dep_label in entry["dependents"]:
+            ET.SubElement(opt, "dependent", {
+                "type": "0",
+                "id": dep_id,
+                "name": dep_label,
+                "reset": "false",
+                "retainonedit": "false"
+            })
 
     return ET.tostring(new_root, encoding="unicode")
 
-def suggest_mapping(xml_text):
-    prompt = f"""
-Analyze the following XML structure and produce:
 
-- Grouping logic summary
-- Duplicate detection
-- Suggested optimized field relationships
-
-Return format:
-1️⃣ Summary  
-2️⃣ Recommendations  
-3️⃣ Clean Mapping (JSON or table)
-
-XML:
-{xml_text}
-"""
-    return llm.generate(prompt)
-
-# ---------------- FILE UPLOAD AREA ----------------
-
+# ---------- UI: XML UPLOAD ----------
 uploaded_file = st.file_uploader("📁 Upload XML File", type=["xml"])
 
-xml_input_col, cleaned_xml_col, compare_col = st.columns(3)
-
-xml_text = None
 cleaned_xml = None
+parsed_root = None
 
 if uploaded_file:
-    xml_text = uploaded_file.read().decode("utf-8")
-    original_root = parse_xml(xml_text)
+    xml_string = uploaded_file.read().decode("utf-8")
 
-    with xml_input_col:
-        st.subheader("📄 Original XML")
-        st.code(xml_text, language="xml")
+    try:
+        parsed_root = ET.fromstring(xml_string)
+        cleaned_xml = generate_clean_xml(parsed_root)
 
-    # Clean XML
-    cleaned_xml = generate_clean_xml(original_root)
+        st.success("XML successfully cleaned and optimized! ✅")
 
-    with cleaned_xml_col:
-        st.subheader("🧹 Cleaned XML")
         st.code(cleaned_xml, language="xml")
 
-    # Comparison Table
-    with compare_col:
-        st.subheader("🔄 Before vs After Count")
-        df = pd.DataFrame([
-            ["Option Count", len(original_root.findall('option')), cleaned_xml.count("<option")],
-            ["Dependent Count", xml_text.count("<dependent"), cleaned_xml.count("<dependent")]
-        ], columns=["Metric", "Original", "Cleaned"])
+    except Exception as e:
+        st.error(f"❌ XML Parsing Error: {str(e)}")
 
-        st.dataframe(df)
+# ---------- EXPORT XML ----------
+if cleaned_xml:
+    st.download_button(
+        "📥 Download Clean XML",
+        cleaned_xml,
+        file_name="optimized_dependents.xml"
+    )
 
-# ---------------- AI MAPPING BUTTON ----------------
+# ---------- EXPORT TO EXCEL ----------
+if cleaned_xml:
+    df_export = pd.DataFrame({"Optimized XML": [cleaned_xml]})
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+        df_export.to_excel(writer, sheet_name="XML", index=False)
+
+    st.download_button(
+        "📊 Export to Excel",
+        data=buffer.getvalue(),
+        file_name="xml_mapping.xlsx"
+    )
+
+# ---------- AI SUGGESTION SECTION ----------
+
 st.divider()
+st.subheader("🤖 AI Insight & Suggestions")
 
-if st.button("🤖 Suggest Mapping (AI)"):
-    if not uploaded_file:
-        st.warning("⚠️ Upload an XML file first.")
-    else:
-        with st.spinner("🔍 AI analyzing structure..."):
-            result = suggest_mapping(cleaned_xml)
-        st.success("📌 AI Mapping Suggestion Ready")
-        st.code(result, language="markdown")
+# AI button disabled until XML processed
+ai_prompt_button = st.button("💡 Suggest Mapping (AI Powered)", disabled=cleaned_xml is None)
 
-# ---------------- DOWNLOAD CLEANED XML ----------------
-if cleaned_xml:
-    st.download_button(
-        label="📥 Download Clean XML",
-        data=cleaned_xml,
-        file_name="cleaned_output.xml",
-        mime="text/xml"
-    )
-# ---------------- EXPORT TO EXCEL ----------------
+if ai_prompt_button:
+    with st.spinner("Analyzing and thinking... 🤖"):
 
-if cleaned_xml:
-    df_export = pd.DataFrame({"Cleaned XML": [cleaned_xml]})
+        prompt = f"Analyze this cleaned XML and suggest improvements:\n\n{cleaned_xml}"
 
-    # Create in-memory buffer (Streamlit-safe)
-    excel_buffer = io.BytesIO()
-    df_export.to_excel(excel_buffer, index=False, sheet_name="XML")  # FIXED: removed engine arg
-    excel_buffer.seek(0)  # Reset pointer before download
+        model_used = "GPT-4o-mini"
 
-    st.download_button(
-        label="📊 Export to Excel",
-        data=excel_buffer,
-        file_name="mapped_output.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+        try:
+            if groq_client:
+                response = groq_client.chat.completions.create(
+                    model="llama3-70b-8192",
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                ai_output = response.choices[0].message["content"]
+                model_used = "Grok LLaMA3 🔥"
+
+            elif openai_client:
+                response = openai_client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                ai_output = response.choices[0].message["content"]
+                model_used = "OpenAI GPT-4o Mini"
+
+            else:
+                ai_output = "⚠️ No API Key detected in Streamlit Secrets."
+
+            st.success(f"AI Analysis Completed using **{model_used}**:")
+            st.write(ai_output)
+
+        except Exception as e:
+            st.error(f"AI Error: {str(e)}")
+
+
+st.caption("Built by IBL Digital Team • AI XML Mapping Assistant 🔧🚀")
