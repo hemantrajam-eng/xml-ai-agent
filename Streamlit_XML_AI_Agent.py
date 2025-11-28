@@ -16,13 +16,10 @@ st.title("🔍 XML Field Mapper (AI Powered)")
 st.caption("Upload → Clean → Compare → Ask AI → Export")
 
 # Show which AI engine is active (if ai_engine exists)
-if llm:
-    try:
-        st.sidebar.success(f"🧠 AI Engine Active: {llm.active_model.upper()}")
-    except Exception:
-        st.sidebar.success("🧠 AI Engine available")
+if llm and llm.active_model:
+    st.sidebar.success(f"🧠 Model in use: {llm.active_model}")
 else:
-    st.sidebar.info("No AI engine detected (ai_engine.py missing or secrets not configured)")
+    st.sidebar.warning("⚠️ AI model not initialized yet.")
 
 # ------------------- Helper functions (correct algorithm) -------------------
 
