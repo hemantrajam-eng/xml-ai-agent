@@ -217,7 +217,6 @@ if cleaned_xml:
 
 # ------------------- Export Mapping to Excel (Expanded per Option) -------------------
 if cleaned_xml:
-    st.subheader("📊 Export Option Mapping to Excel")
 
     root = ET.fromstring(cleaned_xml)
 
@@ -306,3 +305,4 @@ Cleaned XML:
 
 
 st.caption("Built by IBL Digital Team • AI XML Mapping Assistant 🔧🚀")
+
