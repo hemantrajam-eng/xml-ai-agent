@@ -1,121 +1,162 @@
 import streamlit as st
-import xml.etree.ElementTree as ET
-import os
+import pandas as pd
 from openai import OpenAI
-from groq import Groq
-
-st.set_page_config(page_title="XML AI Agent", page_icon="🤖")
-
-# -------------------------
-# SECRET KEYS
-# -------------------------
-OPENAI_KEY = st.secrets.get("OPENAI_API_KEY", "")
-GROK_KEY = st.secrets.get("GROK_API_KEY", "")
-
-# -------------------------
-# Initialize Clients Only If Keys Exist
-# -------------------------
-
-openai_client = None
-if OPENAI_KEY:
-    openai_client = OpenAI(api_key=OPENAI_KEY)
-
-grok_client = None
-if GROK_KEY:
-    grok_client = Groq(api_key=GROK_KEY)
-
-# -------------------------
-# AI CALL FUNCTIONS
-# -------------------------
-
-def ask_openai(prompt):
-    try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        return f"⚠ Error (OpenAI): {str(e)}"
+from lxml import etree
+from io import BytesIO
 
 
-def ask_grok(prompt):
-    try:
-        response = grok_client.chat.completions.create(
-            model="grok-1",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        return f"⚠ Error (Grok): {str(e)}"
+# ---------------- UI Styling ---------------- #
+st.set_page_config(page_title="XML Smart Cleaner & Mapper", page_icon="🤖", layout="wide")
 
+st.markdown("""
+<style>
+    .main {background-color: #f9fafc;}
+    .title {font-size: 32px; font-weight: bold; color:#333;}
+    .sub {font-size:14px; color:#777;}
+    .stButton > button {border-radius:10px; padding:10px 20px; font-weight:bold;}
+    .footer {text-align:center; padding:12px; font-size:12px; color:#aaa;}
+</style>
+""", unsafe_allow_html=True)
 
-def ask_ai(prompt, provider):
-    if provider == "Grok":
-        if not GROK_KEY:
-            return "❌ Grok API key missing."
-        reply = ask_grok(prompt)
-        if "⚠ Error" in reply:  # fallback
-            reply += "\n🔁 Fallback triggered → Trying OpenAI..."
-            reply += "\n\n" + ask_openai(prompt)
-        return reply
+# ---------------- Header ---------------- #
+st.markdown('<div class="title">🧠 XML AI Assistant (Pro Mode)</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub">Upload → Clean → Analyze → AI Mapping → Export</div>', unsafe_allow_html=True)
+st.write("---")
 
-    elif provider == "OpenAI":
-        if not OPENAI_KEY:
-            return "❌ OpenAI API key missing."
-        return ask_openai(prompt)
+# ---------------- Sidebar ---------------- #
+st.sidebar.header("⚙️ Settings")
 
+llm_provider = st.sidebar.selectbox(
+    "AI Model Provider", ["OpenAI", "Groq"]
+)
 
-# -------------------------
-# XML Processing
-# -------------------------
+api_key = st.sidebar.text_input("Enter API Key", type="password")
 
-def clean_xml(xml_string):
-    try:
-        tree = ET.ElementTree(ET.fromstring(xml_string))
-        return ET.tostring(tree.getroot(), encoding="unicode")
-    except:
-        return "❌ Invalid XML format"
+model_name = "gpt-4o-mini" if llm_provider == "OpenAI" else "llama-3.2-90b-vision-preview"
 
-
-# -------------------------
-# STREAMLIT UI
-# -------------------------
-
-st.title("🤖 XML Cleanup & Mapping AI Agent")
-
-ai_model = st.radio("Select AI Model:", ["OpenAI", "Grok"], horizontal=True)
-
-uploaded_file = st.file_uploader("📁 Upload XML File", type=["xml"])
-
-xml_text = ""
-if uploaded_file:
-    xml_text = uploaded_file.read().decode("utf-8")
-    st.text_area("📄 XML Content", xml_text, height=300, key="raw_xml")
-
-cleaned_xml = ""
-
-if st.button("✨ Clean XML"):
-    cleaned_xml = clean_xml(xml_text)
-    st.text_area("🧼 Cleaned XML Output", cleaned_xml, height=300, key="cleaned_xml")
-
-if st.button("🤖 Suggest Mapping (AI Powered)"):
-    if cleaned_xml:
-        with st.spinner("Thinking... 🤔"):
-            ai_response = ask_ai(f"Suggest structured mapping based on this XML:\n\n{cleaned_xml}", ai_model)
-            st.text_area("💡 AI Insight & Suggestions", ai_response, height=300)
+client = None
+if api_key:
+    if llm_provider == "OpenAI":
+        client = OpenAI(api_key=api_key)
     else:
-        st.warning("Upload XML and clean it first.")
-
-# -------------------------
-# DOWNLOAD BUTTON
-# -------------------------
-
-if cleaned_xml:
-    st.download_button("⬇ Download Cleaned XML", cleaned_xml, file_name="cleaned_output.xml")
-
-# Footer
-st.markdown("---")
-st.caption("⚡ Powered by OpenAI + Grok Fusion Agent")
+        from groq import Groq
+        client = Groq(api_key=api_key)
 
 
+# ---------------- Main Panels ---------------- #
+
+col1, col2 = st.columns([1, 1.5])
+
+with col1:
+    st.subheader("📂 Upload XML")
+    uploaded = st.file_uploader("Select XML File", type=["xml"])
+
+    xml_content = None
+    cleaned_xml = None
+
+    if uploaded:
+        xml_content = uploaded.read().decode("utf-8")
+        st.code(xml_content, language="xml")
+
+    # Clean Button
+    if st.button("🧹 Clean & Normalize XML", disabled=(not uploaded)):
+        with st.spinner("Cleaning XML..."):
+            try:
+                root = etree.fromstring(xml_content)
+                cleaned_xml = etree.tostring(root, pretty_print=True).decode("utf-8")
+                st.success("XML successfully normalized! 🎯")
+            except Exception as e:
+                st.error(f"❌ Parsing error: {e}")
+
+
+with col2:
+    st.subheader("🔍 Cleaned XML Output")
+
+    if cleaned_xml:
+        st.code(cleaned_xml, language="xml")
+        st.download_button("⬇️ Download Cleaned XML", cleaned_xml, "cleaned.xml")
+
+    st.write("---")
+
+    # 🔥 AI Mapping Suggestion
+    st.subheader("🤖 AI Mapping & Insights")
+
+    if st.button("🚀 Generate Smart Mapping (AI)", disabled=(client is None or cleaned_xml is None)):
+        with st.spinner("AI analyzing your XML structure 🚧..."):
+            prompt = f"""
+            You are an XML workflow analyzer. Based on the given XML, identify:
+
+            - Duplicate option groups
+            - Similar dependency sets
+            - Recommended merges
+            - Suggested final cleaned output XML
+
+            XML:
+            {cleaned_xml}
+            """
+
+            try:
+                response = client.chat.completions.create(
+                    model=model_name,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+
+                ai_output = response.choices[0].message.content
+                st.success("AI Mapping Completed 🎯")
+                st.markdown(f"### 📌 AI Recommendation\n\n{ai_output}")
+
+                st.download_button("💾 Download AI Report", ai_output, "AI_Mapping_Summary.txt")
+
+            except Exception as e:
+                st.error(f"❌ AI Error: {e}")
+
+
+# ---------------- Footer ---------------- #
+st.markdown('<div class="footer">Made with ❤️ using Streamlit + AI</div>', unsafe_allow_html=True)
+
+# ---------------- Comparison & Export Tools ---------------- #
+st.write("---")
+st.subheader("📊 Comparison View")
+
+if xml_content or cleaned_xml or "ai_output" in locals():
+
+    compare_tabs = st.tabs(["📄 Original XML", "🧼 Cleaned XML", "🤖 AI Suggested Output"])
+
+    with compare_tabs[0]:
+        st.code(xml_content or "No file uploaded", language="xml")
+
+    with compare_tabs[1]:
+        st.code(cleaned_xml or "Not processed yet", language="xml")
+
+    with compare_tabs[2]:
+        st.markdown(ai_output if "ai_output" in locals() else "_Run AI mapping first._")
+
+
+    # ---------- Excel Export Button ---------- #
+    st.write("---")
+    st.subheader("📁 Export Mapping to Excel")
+
+    # Convert to table for Excel if AI structured block exists
+    df = pd.DataFrame({
+        "Version": ["Original", "Cleaned", "AI Suggested"],
+        "Content": [xml_content, cleaned_xml, ai_output if "ai_output" in locals() else None]
+    })
+
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name="XML Comparison")
+
+        # Add pretty formatting
+        workbook = writer.book
+        worksheet = writer.sheets["XML Comparison"]
+        wrap_format = workbook.add_format({'text_wrap': True, 'valign': 'top'})
+
+        worksheet.set_column("A:A", 20)
+        worksheet.set_column("B:B", 120, wrap_format)
+
+    st.download_button(
+        label="⬇ Download Comparison Excel",
+        data=output.getvalue(),
+        file_name="XML_AI_Comparison.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
