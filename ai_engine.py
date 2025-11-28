@@ -55,13 +55,14 @@ class AIEngine:
         if self.grok_client:
             try:
                 response = self.grok_client.chat.completions.create(
-                    model="mixtral-8x7b-32768",
+                    model="grok-3",
                     messages=[{"role": "user", "content": prompt}]
                 )
-                self.active_model = "Grok Mixtral-8x7b-32768"
+                self.active_model = "grok-3"
                 return response.choices[0].message.content
 
             except Exception as e:
                 return f"⚠️ Grok error: {e}"
 
         return "❌ No valid AI model available. Please configure API keys."
+
