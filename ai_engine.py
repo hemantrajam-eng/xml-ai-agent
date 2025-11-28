@@ -56,24 +56,25 @@ class AIEngine:
         if self.openai_client:
             try:
                 response = self.openai_client.chat.completions.create(
-                    model="gpt-4o-mini",  # Dropped "-latest" for stability
+                    model="gpt-4o-mini",
                     messages=[{"role": "user", "content": prompt}]
                 )
                 self.active_model = "OpenAI GPT-4o-mini"
                 return response.choices[0].message.content
             except Exception as e:
-                st.error(f"OpenAI error -> switching to Grok: {e}")  # Use st.error for UI visibility
-        
+                st.warning(f"⚠️ OpenAI failed, switching to Grok ({e})")
+    
         # --- Fallback to Grok ---
         if self.grok_client:
             try:
                 response = self.grok_client.chat.completions.create(
-                    model="grok-4-0709",  # Updated model
+                    model="grok-4-0709",
                     messages=[{"role": "user", "content": prompt}]
                 )
                 self.active_model = "xAI Grok-4-0709"
                 return response.choices[0].message.content
             except Exception as e:
-                return f"⚠️ Grok error: {e}"
-        
+                # Return subtle message only if both failed
+                return "❌ Both OpenAI and Grok failed. Check your API keys."
+    
         return "❌ No valid AI model available. Please configure API keys."
