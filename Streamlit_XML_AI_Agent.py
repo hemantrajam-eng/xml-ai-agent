@@ -8,8 +8,7 @@ st.sidebar.title("🔧 AI Configuration")
 try:
     from ai_engine import AIEngine
     llm = AIEngine()
-except Exception as e:
-    st.error(f"⚠️ Import/Init Error: {e}")
+except Exception:
     llm = None
     
 if llm is None:
@@ -226,14 +225,13 @@ if cleaned_xml:
 
     for opt in root.findall("option"):
 
-        # Group ID stays same for all exploded rows from this <option>
-        group_id = f"G{group_number}"  
+        group_id = f"G{group_number}"
 
         # Split multi names & values
         names = opt.get("name", "").split(",")
         values = opt.get("value", "").split(",")
 
-        # Collect dependents once
+        # Collect dependents
         dependents = []
         for d in opt.findall("dependent"):
             dep_id = d.get("id", "")
@@ -241,18 +239,12 @@ if cleaned_xml:
             dependents.append(f"{dep_id}:{dep_name}")
         dependents_str = ";".join(dependents)
 
-        # Expand rows → match value count safely
+        # Expand rows
         for idx, name in enumerate(names):
             name = name.strip()
-
-            # If values fewer than names → reuse last
-            if idx < len(values):
-                val = values[idx].strip()
-            else:
-                val = values[-1].strip() if values else ""
+            val = values[idx].strip() if idx < len(values) else values[-1].strip() if values else ""
 
             mapping_rows.append([
-                len(mapping_rows) + 1,
                 group_id,
                 name,
                 val,
@@ -261,11 +253,48 @@ if cleaned_xml:
 
         group_number += 1
 
-    # Create DataFrame
-    df_export = pd.DataFrame(mapping_rows, columns=[
-        "Sr No", "Group ID", "Option Name", "Option Value", "Dependents"
-    ])
 
+    # ------------------- Detect Status -------------------
+
+    from collections import defaultdict
+
+    df_export = pd.DataFrame(mapping_rows, columns=["Group ID", "Option Name", "Option Value", "Dependents"])
+
+    status_map = {}
+    dependents_seen = {}
+
+    for gid in df_export["Group ID"].unique():
+        subset = df_export[df_export["Group ID"] == gid]
+
+        dependents_val = subset["Dependents"].iloc[0]
+
+        # Detect split
+        if len(subset) > 1:
+            status_map[gid] = ("✂ Split", f"{len(subset)} options expanded")
+        else:
+            status_map[gid] = ("🆗 Clean", "")
+
+        # Detect merged/duplicate groups based on same dependents
+        if dependents_val in dependents_seen:
+            prev_gid = dependents_seen[dependents_val]
+            status_map[gid] = ("🔄 Merged", f"Merged with {prev_gid}")
+            status_map[prev_gid] = ("🔄 Merged", f"Merged with {gid}")
+        else:
+            dependents_seen[dependents_val] = gid
+
+    # Add metadata columns
+    df_export["Status"] = df_export["Group ID"].apply(lambda x: status_map[x][0])
+    df_export["Notes"] = df_export["Group ID"].apply(lambda x: status_map[x][1])
+
+    # Reorder columns
+    df_export.insert(0, "Sr No", range(1, len(df_export) + 1))
+
+    df_export = df_export[[
+        "Sr No", "Group ID", "Status", "Notes",
+        "Option Name", "Option Value", "Dependents"
+    ]]
+
+    # Export to excel
     excel_buffer = BytesIO()
     df_export.to_excel(excel_buffer, index=False, sheet_name="Mapping")
     excel_buffer.seek(0)
@@ -276,6 +305,7 @@ if cleaned_xml:
         file_name="option_mapping.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
 
 # AI Suggest mapping (if ai_engine present)
 st.markdown("---")
@@ -309,4 +339,3 @@ Cleaned XML:
 
 
 st.caption("Built by IBL Digital Team • AI XML Mapping Assistant 🔧🚀")
-
