@@ -61,93 +61,6 @@ def _split_field(text):
         return []
     return [t.strip() for t in text.split(",") if t.strip()]
 
-def aggregate_per_name(root):
-    """
-    For each individual name (exploded from option/@name), collect:
-      - values: set of values for that name across options
-      - dependents: set of (id, name) tuples across options
-    Also record first appearance index of name for stable ordering.
-    Returns: per_name dict, name_first_index dict
-    """
-    per_name = {}
-    name_first_index = {}
-    appearance_counter = 0
-
-    for opt in root.findall("option"):
-        names = _split_field(opt.get("name", ""))
-        values = _split_field(opt.get("value", ""))
-
-        # dependents in this option
-        deps = []
-        for d in opt.findall("dependent"):
-            dep_id = d.get("id")
-            dep_name = d.get("name")
-            deps.append((dep_id, dep_name))
-
-        # assign each name a corresponding value if available
-        for i, name in enumerate(names):
-            # if fewer values than names, last value used for remaining names (safe fallback)
-            value = values[i] if i < len(values) else (values[-1] if values else "")
-            if name not in per_name:
-                per_name[name] = {"values": set(), "dependents": set()}
-            per_name[name]["values"].add(value)
-            per_name[name]["dependents"].update(deps)
-
-            # record first appearance
-            if name not in name_first_index:
-                name_first_index[name] = appearance_counter
-                appearance_counter += 1
-
-    return per_name, name_first_index
-
-def group_by_deps(per_name, name_first_index):
-    """
-    Group names only if:
-      - They have identical dependent sets
-      - AND identical value sets
-
-    If dependents match but value sets differ → keep as separate groups.
-    """
-
-    groups_map = {}  # key: (deps_key, values_key) -> group data
-
-    for name, info in per_name.items():
-
-        deps_key = tuple(sorted(info["dependents"]))
-        values_key = tuple(sorted(info["values"], key=lambda v: (int(v) if v.isdigit() else v)))
-
-        group_key = (deps_key, values_key)
-
-        if group_key not in groups_map:
-            groups_map[group_key] = {
-                "names": set(),
-                "values": set(),
-                "dependents": list(sorted(info["dependents"]))
-            }
-
-        groups_map[group_key]["names"].add(name)
-        groups_map[group_key]["values"].update(info["values"])
-
-    # Convert result to ordered list
-    groups = []
-    for (_, _), data in groups_map.items():
-
-        # Sorting for stable output
-        ordered_names = sorted(data["names"], key=lambda n: name_first_index.get(n, 10**9))
-        ordered_values = sorted(data["values"], key=lambda v: (int(v) if v.isdigit() else v))
-
-        order_key = min(name_first_index.get(n, 10**9) for n in ordered_names)
-
-        groups.append({
-            "names": ordered_names,
-            "values": ordered_values,
-            "dependents": data["dependents"],
-            "order_key": order_key
-        })
-
-    groups.sort(key=lambda x: x["order_key"])
-    return groups
-
 def _prettify_xml(elem):
     """
     Simple pretty printer to indent XML for readability.
@@ -168,22 +81,80 @@ def _prettify_xml(elem):
 
 def generate_clean_xml_from_root(root):
     """
-    Full pipeline:
-      - aggregate per name
-      - group names by identical dependent sets
-      - build new <dependents> XML preserving original attributes
+    Rewritten pipeline that preserves original option-level grouping and
+    only merges across original <option> elements when BOTH:
+      - dependent sets are identical
+      - AND the value sets (IDs) are identical
+
+    This prevents grouping same-named entries that have different value IDs.
     """
-    per_name, name_first_index = aggregate_per_name(root)
-    groups = group_by_deps(per_name, name_first_index)
+
+    # Step 1: read original options into a list of records preserving order
+    original_options = []
+    for opt in root.findall("option"):
+        names = _split_field(opt.get("name", ""))
+        values = _split_field(opt.get("value", ""))
+
+        # canonical dependents signature (sorted list of "id:name")
+        dependents = sorted([f"{d.get('id')}:{d.get('name')}" for d in opt.findall("dependent")])
+        deps_key = tuple(dependents)  # tuple so hashable
+
+        # store as record (keep original order of names/values)
+        original_options.append({
+            "names": names,
+            "values": values,
+            "deps_key": deps_key,
+            "dependents": dependents
+        })
+
+    # Step 2: group original options by (deps_key, values_key)
+    # values_key as tuple of values in order -> ensures value identity required to merge across originals.
+    groups_map = {}
+    appearance_counter = 0  # to preserve stable ordering across groups
+
+    for record in original_options:
+        # use tuple(values) as the values key; empty values -> empty tuple
+        values_key = tuple(record["values"])
+        group_key = (record["deps_key"], values_key)
+
+        if group_key not in groups_map:
+            groups_map[group_key] = {
+                "names": [],      # will append names in original appearance order
+                "values": list(values_key),
+                "dependents": list(record["dependents"]),
+                "first_appearance": appearance_counter
+            }
+            appearance_counter += 1
+
+        # extend names preserving original order (do not dedupe here; dedupe later if desired)
+        groups_map[group_key]["names"].extend(record["names"])
+
+    # Step 3: build new <dependents> root using grouped data in stable order
+    # Sort groups by first_appearance so we keep stable ordering
+    groups_ordered = sorted(groups_map.items(), key=lambda kv: kv[1]["first_appearance"])
 
     new_root = ET.Element("dependents", root.attrib)
 
-    for g in groups:
+    for _, data in groups_ordered:
         opt = ET.SubElement(new_root, "option")
-        opt.set("name", ",".join(g["names"]))
-        opt.set("value", ",".join(g["values"]))
-        # append dependents in stable order
-        for dep_id, dep_name in g["dependents"]:
+
+        # names: join the list using comma. We preserve the original ordering of names.
+        # Optionally remove duplicates while preserving order:
+        seen = set()
+        dedup_names = []
+        for n in data["names"]:
+            if n not in seen:
+                dedup_names.append(n)
+                seen.add(n)
+        opt.set("name", ",".join(dedup_names))
+
+        # values: join values list (values_key) as given — they represent the canonical values for the group
+        opt.set("value", ",".join(data["values"]))
+
+        # append dependents (they are identical for the group)
+        for dep in data["dependents"]:
+            # dep is "id:name"
+            dep_id, dep_name = dep.split(":", 1)
             ET.SubElement(opt, "dependent", {
                 "type": "0",
                 "id": dep_id,
