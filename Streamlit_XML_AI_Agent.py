@@ -102,31 +102,50 @@ def aggregate_per_name(root):
 
 def group_by_deps(per_name, name_first_index):
     """
-    Group names that have exactly identical dependent sets.
-    Returns ordered list of groups (each group: names, values, dependents, order_key)
+    Group names only if:
+      - They have identical dependent sets
+      - AND identical value sets
+
+    If dependents match but value sets differ → keep as separate groups.
     """
-    groups_map = {}  # key: deps_key (tuple) -> aggregated data
+
+    groups_map = {}  # key: (deps_key, values_key) -> group data
 
     for name, info in per_name.items():
-        deps_key = tuple(sorted(info["dependents"]))
-        if deps_key not in groups_map:
-            groups_map[deps_key] = {"names": set(), "values": set(), "dependents": list(sorted(info["dependents"]))}
-        groups_map[deps_key]["names"].add(name)
-        groups_map[deps_key]["values"].update(info["values"])
 
-    # Turn into list with order_key computed from earliest name appearance
+        deps_key = tuple(sorted(info["dependents"]))
+        values_key = tuple(sorted(info["values"], key=lambda v: (int(v) if v.isdigit() else v)))
+
+        group_key = (deps_key, values_key)
+
+        if group_key not in groups_map:
+            groups_map[group_key] = {
+                "names": set(),
+                "values": set(),
+                "dependents": list(sorted(info["dependents"]))
+            }
+
+        groups_map[group_key]["names"].add(name)
+        groups_map[group_key]["values"].update(info["values"])
+
+    # Convert result to ordered list
     groups = []
-    for deps_key, data in groups_map.items():
-        order_key = min(name_first_index.get(n, 10**9) for n in data["names"])
+    for (_, _), data in groups_map.items():
+
+        # Sorting for stable output
+        ordered_names = sorted(data["names"], key=lambda n: name_first_index.get(n, 10**9))
+        ordered_values = sorted(data["values"], key=lambda v: (int(v) if v.isdigit() else v))
+
+        order_key = min(name_first_index.get(n, 10**9) for n in ordered_names)
+
         groups.append({
-            "names": sorted(data["names"], key=lambda x: name_first_index.get(x, 10**9)),
-            "values": sorted(data["values"], key=lambda v: (int(v) if v.isdigit() else v)),
+            "names": ordered_names,
+            "values": ordered_values,
             "dependents": data["dependents"],
             "order_key": order_key
         })
 
-    # Sort groups by order_key to preserve stable ordering based on first appearance
-    groups.sort(key=lambda g: g["order_key"])
+    groups.sort(key=lambda x: x["order_key"])
     return groups
 
 def _prettify_xml(elem):
