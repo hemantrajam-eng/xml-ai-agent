@@ -215,88 +215,78 @@ if uploaded and cleaned_xml:
 if cleaned_xml:
     st.download_button("📥 Download Clean XML", cleaned_xml, file_name="cleaned_dependents.xml", mime="text/xml")
 
-# ------------------- Export Mapping to Excel (Expanded per Option) -------------------
-if cleaned_xml:
+# ------------------- Export Mapping with Change Tracking -------------------
+if cleaned_xml and uploaded:
 
-    root = ET.fromstring(cleaned_xml)
+    # Parse both XMLs
+    root_clean = ET.fromstring(cleaned_xml)
+    root_original = ET.fromstring(xml_text)
 
-    mapping_rows = []
+    # ------- STEP 1: Build mapping from original XML -------
+    original_map = {}  # key: dependents signature → set of individual names
+
+    for opt in root_original.findall("option"):
+        names = [n.strip() for n in opt.get("name", "").split(",")]
+
+        deps = sorted([f"{d.get('id')}:{d.get('name')}" for d in opt.findall("dependent")])
+        deps_key = "|".join(deps)
+
+        if deps_key not in original_map:
+            original_map[deps_key] = set()
+
+        original_map[deps_key].update(names)
+
+
+    # ------- STEP 2: Build cleaned mapping -------
+    export_rows = []
     group_number = 1
+    change_notes = {}
 
-    for opt in root.findall("option"):
+    for opt in root_clean.findall("option"):
 
         group_id = f"G{group_number}"
+        names = [n.strip() for n in opt.get("name","").split(",")]
+        values = [v.strip() for v in opt.get("value","").split(",")]
 
-        # Split multi names & values
-        names = opt.get("name", "").split(",")
-        values = opt.get("value", "").split(",")
+        deps = sorted([f"{d.get('id')}:{d.get('name')}" for d in opt.findall("dependent")])
+        deps_key = "|".join(deps)
 
-        # Collect dependents
-        dependents = []
-        for d in opt.findall("dependent"):
-            dep_id = d.get("id", "")
-            dep_name = d.get("name", "")
-            dependents.append(f"{dep_id}:{dep_name}")
-        dependents_str = ";".join(dependents)
+        # Compare original vs cleaned
+        original_names = original_map.get(deps_key, set())
 
-        # Expand rows
-        for idx, name in enumerate(names):
-            name = name.strip()
-            val = values[idx].strip() if idx < len(values) else values[-1].strip() if values else ""
+        if len(original_names) > 1 and len(names) == 1:
+            status = "🔄 Merged"
+            note = f"Merged {len(original_names)} → 1"
+        elif len(names) > 1:
+            status = "✂ Split"
+            note = f"Split into {len(names)}"
+        elif names == list(original_names):
+            status = "🟢 Unchanged"
+            note = ""
+        else:
+            status = "❓ Modified"
+            note = "Names altered / dependency changed"
 
-            mapping_rows.append([
-                group_id,
-                name,
-                val,
-                dependents_str
+        # Store per grouped option
+        for i, name in enumerate(names):
+            val = values[i] if i < len(values) else values[-1]
+
+            export_rows.append([
+                group_id, name, val, deps_key.replace("|", ";"), status, note
             ])
 
         group_number += 1
 
 
-    # ------------------- Detect Status -------------------
+    # ------- STEP 3: DataFrame & Export -------
+    df = pd.DataFrame(export_rows, columns=[
+        "Group ID", "Option Name", "Option Value", "Dependents", "Status", "Notes"
+    ])
+    
+    df.insert(0, "Sr No", range(1, len(df)+1))
 
-    from collections import defaultdict
-
-    df_export = pd.DataFrame(mapping_rows, columns=["Group ID", "Option Name", "Option Value", "Dependents"])
-
-    status_map = {}
-    dependents_seen = {}
-
-    for gid in df_export["Group ID"].unique():
-        subset = df_export[df_export["Group ID"] == gid]
-
-        dependents_val = subset["Dependents"].iloc[0]
-
-        # Detect split
-        if len(subset) > 1:
-            status_map[gid] = ("✂ Split", f"{len(subset)} options expanded")
-        else:
-            status_map[gid] = ("🆗 Clean", "")
-
-        # Detect merged/duplicate groups based on same dependents
-        if dependents_val in dependents_seen:
-            prev_gid = dependents_seen[dependents_val]
-            status_map[gid] = ("🔄 Merged", f"Merged with {prev_gid}")
-            status_map[prev_gid] = ("🔄 Merged", f"Merged with {gid}")
-        else:
-            dependents_seen[dependents_val] = gid
-
-    # Add metadata columns
-    df_export["Status"] = df_export["Group ID"].apply(lambda x: status_map[x][0])
-    df_export["Notes"] = df_export["Group ID"].apply(lambda x: status_map[x][1])
-
-    # Reorder columns
-    df_export.insert(0, "Sr No", range(1, len(df_export) + 1))
-
-    df_export = df_export[[
-        "Sr No", "Group ID", "Status", "Notes",
-        "Option Name", "Option Value", "Dependents"
-    ]]
-
-    # Export to excel
     excel_buffer = BytesIO()
-    df_export.to_excel(excel_buffer, index=False, sheet_name="Mapping")
+    df.to_excel(excel_buffer, index=False, sheet_name="Mapping")
     excel_buffer.seek(0)
 
     st.download_button(
@@ -305,8 +295,7 @@ if cleaned_xml:
         file_name="option_mapping.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-
-
+    
 # AI Suggest mapping (if ai_engine present)
 st.markdown("---")
 st.subheader("🤖 AI: Suggest Mapping (Optional)")
