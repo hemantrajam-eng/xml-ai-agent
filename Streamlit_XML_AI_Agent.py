@@ -3,6 +3,8 @@ import xml.etree.ElementTree as ET
 import pandas as pd
 from io import BytesIO
 import os
+from datetime import datetime
+
 st.sidebar.title("🔧 AI Configuration")
 
 try:
@@ -10,7 +12,7 @@ try:
     llm = AIEngine()
 except Exception:
     llm = None
-    
+
 if llm is None:
     st.sidebar.error("❌ AI engine not loaded.")
 else:
@@ -48,7 +50,7 @@ st.title("🔍 XML Field Mapper (AI Powered)")
 st.caption("Upload → Clean → Compare → Ask AI → Export")
 
 # Show which AI engine is active (if ai_engine exists)
-if llm and llm.active_model:
+if llm and getattr(llm, "active_model", None):
     st.sidebar.success(f"🧠 Model in use: {llm.active_model}")
 else:
     st.sidebar.warning("⚠️ AI model not initialized yet.")
@@ -77,7 +79,6 @@ def _prettify_xml(elem):
         if level and (not e.tail or not e.tail.strip()):
             e.tail = i
     _indent(elem)
-    
     return ET.tostring(elem, encoding="unicode")
 
 def generate_clean_xml_from_root(root):
@@ -176,9 +177,7 @@ def generate_clean_xml_from_root(root):
                 "retainonedit": "false"
             })
 
-
     return _prettify_xml(new_root)
-
 
 # ------------------- Streamlit app UI -------------------
 
@@ -191,7 +190,6 @@ if uploaded:
     xml_text = uploaded.read().decode("utf-8")
     st.subheader("📄 Original XML Preview")
     st.code("\n".join(xml_text.splitlines()[:10]) + ("\n..." if len(xml_text.splitlines())>10 else ""), language="xml")
-
 
     # parse and clean
     try:
@@ -220,78 +218,176 @@ if uploaded and cleaned_xml:
 if cleaned_xml:
     st.download_button("📥 Download Clean XML", cleaned_xml, file_name="cleaned_dependents.xml", mime="text/xml")
 
-# ------------------- Export Mapping with Change Tracking -------------------
+# ------------------- Export Mapping with Change Tracking (Hybrid G numbering) -------------------
 if cleaned_xml and uploaded:
 
+    # Parse both XMLs
     root_clean = ET.fromstring(cleaned_xml)
     root_original = ET.fromstring(xml_text)
 
-    # ---- Build original flattened record list ----
-    original_records = []
+    # ---------------- Build original groups (preserve order) ----------------
+    original_groups = []  # list of dicts: {id: "G1", values_set: frozenset([...]), names: [...], dependents: [...]}
+    original_group_set_to_id = {}
+    value_to_original_group_sets = {}  # value -> list of frozenset group sets it belonged to (in order)
+    value_to_original_deps = {}  # value -> set of "id:name" strings (union across occurrences)
+    value_to_original_name = {}  # first-seen name -> value mapping (for Original Value Name column)
+
+    g_count = 0
     for opt in root_original.findall("option"):
+        g_count += 1
+        gid = f"G{g_count}"
         names = _split_field(opt.get("name", ""))
         values = _split_field(opt.get("value", ""))
+        # group values set (based on value ids)
+        values_set = frozenset(values)
+
         deps = sorted([f"{d.get('id')}:{d.get('name')}" for d in opt.findall("dependent")])
-        
-        for i, name in enumerate(names):
-            val = values[i] if i < len(values) else values[-1]
-            original_records.append({
-                "name": name,
-                "value": val,
-                "dependents": deps,
-                "group_key": "|".join(sorted(names))  # original grouping signature
-            })
 
-    df_original = pd.DataFrame(original_records)
+        original_groups.append({
+            "id": gid,
+            "values_set": values_set,
+            "names": names,
+            "dependents": deps
+        })
 
-    # ---- Build cleaned flattened record list ----
-    cleaned_records = []
+        # mapping group set -> id (first occurrence)
+        if values_set not in original_group_set_to_id:
+            original_group_set_to_id[values_set] = gid
+
+        # register each value's original group sets (a value may appear multiple times)
+        for v in values:
+            value_to_original_group_sets.setdefault(v, []).append(values_set)
+            # union dependents per value
+            value_to_original_deps.setdefault(v, set()).update(deps)
+
+    # ---------------- Build cleaned groups (preserve order from cleaned XML) ----------------
+    cleaned_groups = []  # list of dicts: {names:[], values:[], dependents:[], final_values_set: frozenset(...) }
     for opt in root_clean.findall("option"):
         names = _split_field(opt.get("name", ""))
         values = _split_field(opt.get("value", ""))
         deps = sorted([f"{d.get('id')}:{d.get('name')}" for d in opt.findall("dependent")])
-        
+        cleaned_groups.append({
+            "names": names,
+            "values": values,
+            "dependents": deps,
+            "values_set": frozenset(values)
+        })
+
+    # ---------------- Hybrid G numbering ----------------
+    # Start new G numbers from next after original groups
+    next_g_index = g_count + 1
+    final_group_assignments = []  # parallel to cleaned_groups: assigned final G id
+    used_new_ids = []
+
+    # We'll also keep a mapping from final values_set to final G id (to avoid duplicate new Gs)
+    final_valueset_to_gid = {}
+
+    for cg in cleaned_groups:
+        fvset = cg["values_set"]
+        # If this final values set exactly matches any original group set -> keep that original G id
+        if fvset in original_group_set_to_id:
+            gid = original_group_set_to_id[fvset]
+            final_valueset_to_gid[fvset] = gid
+            final_group_assignments.append(gid)
+        else:
+            # If we've already assigned a new G id for this final set earlier, reuse it
+            if fvset in final_valueset_to_gid:
+                gid = final_valueset_to_gid[fvset]
+                final_group_assignments.append(gid)
+            else:
+                gid = f"G{next_g_index}"
+                next_g_index += 1
+                final_valueset_to_gid[fvset] = gid
+                used_new_ids.append(gid)
+                final_group_assignments.append(gid)
+
+    # ---------------- Build per-value export rows ----------------
+    export_rows = []
+    # We'll need quick lookups:
+    # value -> final group id and final group values_set and final dependents and final group name (joined names)
+    value_to_final_info = {}
+    for cg, gid in zip(cleaned_groups, final_group_assignments):
+        for v in cg["values"]:
+            value_to_final_info[v] = {
+                "final_gid": gid,
+                "final_values_set": cg["values_set"],
+                "final_dependents": cg["dependents"],
+                "final_group_name": ",".join(cg["names"])
+            }
+
+    # For original name mapping (first-seen)
+    for opt in root_original.findall("option"):
+        names = _split_field(opt.get("name", ""))
+        values = _split_field(opt.get("value", ""))
         for i, name in enumerate(names):
-            val = values[i] if i < len(values) else values[-1]
-            cleaned_records.append({
-                "name": name,
-                "value": val,
-                "dependents": deps,
-                "group_key": "|".join(sorted(names))  # cleaned grouping signature
-            })
+            val = values[i] if i < len(values) else values[-1] if values else ""
+            if val and val not in value_to_original_name:
+                value_to_original_name[val] = name
 
-    df_clean = pd.DataFrame(cleaned_records)
+    # Now construct rows for each final value (preserve cleaned order by iterating cleaned_groups)
+    sr = 1
+    for cg, gid in zip(cleaned_groups, final_group_assignments):
+        final_values = cg["values"]
+        final_values_set = cg["values_set"]
+        final_deps = cg["dependents"]
+        final_group_name = ",".join(cg["names"])
+        for v in final_values:
+            orig_name = value_to_original_name.get(v, "")
+            # determine original group id for this value (if any)
+            orig_group_id = ""
+            orig_group_sets = value_to_original_group_sets.get(v, [])
+            if orig_group_sets:
+                # if any of the original group sets exactly match final set, take that group's id
+                matched = None
+                for ogs in orig_group_sets:
+                    if ogs == final_values_set and ogs in original_group_set_to_id:
+                        matched = original_group_set_to_id[ogs]
+                        break
+                if matched:
+                    orig_group_id = matched
+                else:
+                    # otherwise pick the first original group id this value belonged to (traceability)
+                    first_ogs = orig_group_sets[0]
+                    orig_group_id = original_group_set_to_id.get(first_ogs, "")
+            # Group Status: Modified if final_values_set not in original_group_sets for this value
+            group_status = "Non-modified" if (final_values_set in orig_group_sets) else "Modified"
+            # Dependency Status: compare original deps (union) vs final deps
+            orig_deps_set = set(value_to_original_deps.get(v, []))
+            final_deps_set = set(final_deps)
+            dependency_status = "Non-modified" if orig_deps_set == final_deps_set else "Modified"
 
-    # ---- Merge original vs cleaned for change tracking ----
-    df_compare = df_clean.merge(df_original, on=["name", "value"], how="left", suffixes=("_new", "_old"))
+            export_rows.append([
+                sr,
+                v,
+                orig_name,
+                final_group_name,
+                orig_group_id,
+                gid,
+                group_status,
+                dependency_status,
+                ";".join(sorted(orig_deps_set)),
+                ";".join(sorted(final_deps_set))
+            ])
+            sr += 1
 
-    # ---- Determine statuses ----
-    df_compare["Group Status"] = df_compare.apply(
-        lambda x: "Modified" if x["group_key_new"] != x["group_key_old"] else "Non-modified",
-        axis=1
-    )
-
-    df_compare["Dependency Status"] = df_compare.apply(
-        lambda x: "Modified" if x["dependents_new"] != x["dependents_old"] else "Non-modified",
-        axis=1
-    )
-
-    # ---- Final export structure ----
-    df_export = df_compare[[
-        "name",
-        "value",
-        "dependents_new",
+    # Build DataFrame and export
+    df_export = pd.DataFrame(export_rows, columns=[
+        "Sr No",
+        "Value ID",
+        "Original Value Name",
+        "Final Group Name",
+        "Original Group ID",
+        "Final Group ID",
         "Group Status",
-        "Dependency Status"
-    ]].rename(columns={
-        "name": "Option Name",
-        "value": "Option Value",
-        "dependents_new": "Final Dependents"
-    })
+        "Dependency Status",
+        "Original Dependents",
+        "Final Dependents"
+    ])
 
-    df_export.insert(0, "Sr No", range(1, len(df_export) + 1))
+    # Date-stamped file name
+    today = datetime.now().strftime("%Y%m%d")
+    excel_filename = f"Cleaned_XML_Report_{today}.xlsx"
 
-    # ---- Export to Excel ----
     excel_buffer = BytesIO()
     df_export.to_excel(excel_buffer, index=False, sheet_name="Mapping")
     excel_buffer.seek(0)
@@ -299,11 +395,10 @@ if cleaned_xml and uploaded:
     st.download_button(
         "📥 Download Mapping Excel",
         data=excel_buffer,
-        file_name="option_mapping.xlsx",
+        file_name=excel_filename,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
-    
 # AI Suggest mapping (if ai_engine present)
 st.markdown("---")
 st.subheader("🤖 AI: Suggest Mapping (Optional)")
@@ -333,6 +428,5 @@ Cleaned XML:
                         st.code(ai_text)
                 except Exception as e:
                     st.error(f"AI call error: {e}")
-
 
 st.caption("Built by IBL Digital Team • AI XML Mapping Assistant 🔧🚀")
