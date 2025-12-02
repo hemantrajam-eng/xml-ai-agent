@@ -223,75 +223,77 @@ if cleaned_xml:
 # ------------------- Export Mapping with Change Tracking -------------------
 if cleaned_xml and uploaded:
 
-    # Parse both XMLs
     root_clean = ET.fromstring(cleaned_xml)
     root_original = ET.fromstring(xml_text)
 
-    # ------- STEP 1: Build mapping from original XML -------
-    original_map = {}  # key: dependents signature → set of individual names
-
+    # ---- Build original flattened record list ----
+    original_records = []
     for opt in root_original.findall("option"):
-        names = [n.strip() for n in opt.get("name", "").split(",")]
-
+        names = _split_field(opt.get("name", ""))
+        values = _split_field(opt.get("value", ""))
         deps = sorted([f"{d.get('id')}:{d.get('name')}" for d in opt.findall("dependent")])
-        deps_key = "|".join(deps)
-
-        if deps_key not in original_map:
-            original_map[deps_key] = set()
-
-        original_map[deps_key].update(names)
-
-
-    # ------- STEP 2: Build cleaned mapping -------
-    export_rows = []
-    group_number = 1
-    change_notes = {}
-
-    for opt in root_clean.findall("option"):
-
-        group_id = f"G{group_number}"
-        names = [n.strip() for n in opt.get("name","").split(",")]
-        values = [v.strip() for v in opt.get("value","").split(",")]
-
-        deps = sorted([f"{d.get('id')}:{d.get('name')}" for d in opt.findall("dependent")])
-        deps_key = "|".join(deps)
-
-        # Compare original vs cleaned
-        original_names = original_map.get(deps_key, set())
-
-        if len(original_names) > 1 and len(names) == 1:
-            status = "🔄 Merged"
-            note = f"Merged {len(original_names)} → 1"
-        elif len(names) > 1:
-            status = "✂ Split"
-            note = f"Split into {len(names)}"
-        elif names == list(original_names):
-            status = "🟢 Unchanged"
-            note = ""
-        else:
-            status = "❓ Modified"
-            note = "Names altered / dependency changed"
-
-        # Store per grouped option
+        
         for i, name in enumerate(names):
             val = values[i] if i < len(values) else values[-1]
+            original_records.append({
+                "name": name,
+                "value": val,
+                "dependents": deps,
+                "group_key": "|".join(sorted(names))  # original grouping signature
+            })
 
-            export_rows.append([
-                group_id, name, val, deps_key.replace("|", ";"), status, note
-            ])
+    df_original = pd.DataFrame(original_records)
 
-        group_number += 1
+    # ---- Build cleaned flattened record list ----
+    cleaned_records = []
+    for opt in root_clean.findall("option"):
+        names = _split_field(opt.get("name", ""))
+        values = _split_field(opt.get("value", ""))
+        deps = sorted([f"{d.get('id')}:{d.get('name')}" for d in opt.findall("dependent")])
+        
+        for i, name in enumerate(names):
+            val = values[i] if i < len(values) else values[-1]
+            cleaned_records.append({
+                "name": name,
+                "value": val,
+                "dependents": deps,
+                "group_key": "|".join(sorted(names))  # cleaned grouping signature
+            })
 
+    df_clean = pd.DataFrame(cleaned_records)
 
-    # ------- STEP 3: DataFrame & Export -------
-    df = pd.DataFrame(export_rows, columns=[
-        "Group ID", "Option Name", "Option Value", "Dependents", "Status", "Notes"
-    ])
-    
-    df.insert(0, "Sr No", range(1, len(df)+1))
+    # ---- Merge original vs cleaned for change tracking ----
+    df_compare = df_clean.merge(df_original, on=["name", "value"], how="left", suffixes=("_new", "_old"))
 
+    # ---- Determine statuses ----
+    df_compare["Group Status"] = df_compare.apply(
+        lambda x: "Modified" if x["group_key_new"] != x["group_key_old"] else "Non-modified",
+        axis=1
+    )
+
+    df_compare["Dependency Status"] = df_compare.apply(
+        lambda x: "Modified" if x["dependents_new"] != x["dependents_old"] else "Non-modified",
+        axis=1
+    )
+
+    # ---- Final export structure ----
+    df_export = df_compare[[
+        "name",
+        "value",
+        "dependents_new",
+        "Group Status",
+        "Dependency Status"
+    ]].rename(columns={
+        "name": "Option Name",
+        "value": "Option Value",
+        "dependents_new": "Final Dependents"
+    })
+
+    df_export.insert(0, "Sr No", range(1, len(df_export) + 1))
+
+    # ---- Export to Excel ----
     excel_buffer = BytesIO()
-    df.to_excel(excel_buffer, index=False, sheet_name="Mapping")
+    df_export.to_excel(excel_buffer, index=False, sheet_name="Mapping")
     excel_buffer.seek(0)
 
     st.download_button(
@@ -300,6 +302,7 @@ if cleaned_xml and uploaded:
         file_name="option_mapping.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
     
 # AI Suggest mapping (if ai_engine present)
 st.markdown("---")
