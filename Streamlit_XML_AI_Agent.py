@@ -81,87 +81,107 @@ def _prettify_xml(elem):
 
 def generate_clean_xml_from_root(root):
     """
-    Final grouping logic:
-
+    Clean and regroup XML <option> elements according to rules:
+    
     Rules:
     1️⃣ If an <option> contains comma-separated names → split into individual items.
     2️⃣ If the same value ID appears in multiple <option> blocks → that value becomes its own group.
     3️⃣ After splitting, regroup by VALUE: combine dependents across all occurrences of the same value (union).
     4️⃣ If multiple values share identical merged dependents → merge them back into a single group.
     5️⃣ Sort resulting option names alphabetically.
+    
+    Additionally:
+    - Keep the 'name' attribute of each dependent from its first occurrence.
     """
 
-    # ---------------- Extract clean flattened rows ----------------
+    # ---------------- Helper to split comma-separated fields ----------------
+    def _split_field(text):
+        if not text:
+            return []
+        return [t.strip() for t in text.split(",") if t.strip()]
+
+    # ---------------- Step 1: Flatten options ----------------
     flat = []
+    dep_id_to_name = {}  # store first occurrence of each dependent id
 
     for opt in root.findall("option"):
         names = _split_field(opt.get("name", ""))
         values = _split_field(opt.get("value", ""))
+        deps = opt.findall("dependent")
 
-        deps = sorted([f"{d.get('id')}:{d.get('name')}" for d in opt.findall("dependent")])
+        dep_ids = []
+        for d in deps:
+            dep_id = d.get("id")
+            dep_name = d.get("name", "")
+            dep_ids.append(dep_id)
+            if dep_id not in dep_id_to_name:
+                dep_id_to_name[dep_id] = dep_name
 
-        # expand into name-value pairs
+        # Expand into name-value pairs
         for i, name in enumerate(names):
             value = values[i] if i < len(values) else values[-1]
-            flat.append({"name": name, "value": value, "dependents": deps})
+            flat.append({
+                "name": name,
+                "value": value,
+                "dependents": set(dep_ids)  # store only IDs for union
+            })
 
-    # ---------------- Value-based dependent union ----------------
-    value_to_dependents_union = {}
-
+    # ---------------- Step 2: Regroup by VALUE → combine dependents ----------------
+    value_to_deps = {}
     for entry in flat:
         val = entry["value"]
-        value_to_dependents_union.setdefault(val, set())
-        value_to_dependents_union[val].update(entry["dependents"])
+        if val not in value_to_deps:
+            value_to_deps[val] = set()
+        value_to_deps[val].update(entry["dependents"])
 
-    # ---------------- Group by unified dependents ----------------
-    final_groups = {}
-    order = 0
-
+    # ---------------- Step 3: Group by identical dependents ----------------
+    depset_to_group = {}
+    group_order = 0
     for entry in flat:
         val = entry["value"]
-        unified_deps = tuple(sorted(value_to_dependents_union[val]))
+        deps_ids_frozen = frozenset(value_to_deps[val])  # identical dep IDs → same group
 
-        if unified_deps not in final_groups:
-            final_groups[unified_deps] = {
+        if deps_ids_frozen not in depset_to_group:
+            depset_to_group[deps_ids_frozen] = {
                 "names": [],
                 "values": [],
-                "dependents": unified_deps,
-                "order": order
+                "dependents": deps_ids_frozen,
+                "order": group_order
             }
-            order += 1
+            group_order += 1
 
-        final_groups[unified_deps]["names"].append(entry["name"])
-        final_groups[unified_deps]["values"].append(val)
+        depset_to_group[deps_ids_frozen]["names"].append(entry["name"])
+        depset_to_group[deps_ids_frozen]["values"].append(val)
 
-    # ---------------- Deduplicate + Sort ----------------
-    for g in final_groups.values():
+    # ---------------- Step 4: Deduplicate and sort ----------------
+    for g in depset_to_group.values():
         g["names"] = sorted(list(dict.fromkeys(g["names"])), key=str.lower)
         g["values"] = sorted(list(set(g["values"])), key=lambda x: int(x))
 
     # Sort groups alphabetically by first option name
     sorted_groups = sorted(
-        final_groups.items(),
+        depset_to_group.items(),
         key=lambda kv: kv[1]["names"][0].lower()
     )
 
-    # ---------------- Build final XML ----------------
+    # ---------------- Step 5: Build final XML ----------------
     new_root = ET.Element("dependents", root.attrib)
-
     for _, group in sorted_groups:
         opt = ET.SubElement(new_root, "option")
         opt.set("name", ",".join(group["names"]))
         opt.set("value", ",".join(group["values"]))
 
-        for dep in group["dependents"]:
-            dep_id, dep_name = dep.split(":", 1)
+        # Preserve dependent names from first occurrence
+        for dep_id in sorted(group["dependents"]):
             ET.SubElement(opt, "dependent", {
                 "type": "0",
                 "id": dep_id,
-                "name": dep_name,
+                "name": dep_id_to_name.get(dep_id, ""),
                 "reset": "false",
                 "retainonedit": "false"
             })
 
+    
     return _prettify_xml(new_root)
 
 
