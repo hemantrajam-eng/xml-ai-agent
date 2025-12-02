@@ -159,8 +159,8 @@ def generate_clean_xml_from_root(root):
         groups[key]["values"].append(entry["value"])
 
     # Step 3: build new <dependents> root using grouped data in stable order
-    # Sort groups by first_appearance so we keep stable ordering
-    groups_ordered = sorted(groups.items(), key=lambda kv: kv[1]["first_appearance"])
+    # Sort groups by stored appearance order
+    groups_ordered = sorted(groups.items(), key=lambda kv: kv[1]["order"])
 
     new_root = ET.Element("dependents", root.attrib)
 
