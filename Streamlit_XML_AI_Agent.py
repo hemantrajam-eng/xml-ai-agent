@@ -106,57 +106,57 @@ def generate_clean_xml_from_root(root):
             "deps_key": deps_key,
             "dependents": dependents
         })
-# Step 2: Flatten every option into (name, value, deps) tuples
-flat = []
+    # Step 2: Flatten every option into (name, value, deps) tuples
+    flat = []
 
-value_to_dep_map = {}  # to detect crossings
+    value_to_dep_map = {}  # to detect crossings
 
-for record in original_options:
-    
-    # expand name/value pairs preserving sequence
-    for idx, name in enumerate(record["names"]):
-        name = name.strip()
-        val = record["values"][idx] if idx < len(record["values"]) else record["values"][-1]
+    for record in original_options:
+        
+        # expand name/value pairs preserving sequence
+        for idx, name in enumerate(record["names"]):
+            name = name.strip()
+            val = record["values"][idx] if idx < len(record["values"]) else record["values"][-1]
 
-        entry = {
-            "name": name,
-            "value": val,
-            "deps_key": tuple(record["deps_key"]),
-            "dependents": record["dependents"]
-        }
-        flat.append(entry)
+            entry = {
+                "name": name,
+                "value": val,
+                "deps_key": tuple(record["deps_key"]),
+                "dependents": record["dependents"]
+            }
+            flat.append(entry)
 
-        # Track if same value appears in multiple options
-        value_to_dep_map.setdefault(val, []).append(entry)
+            # Track if same value appears in multiple options
+            value_to_dep_map.setdefault(val, []).append(entry)
 
-# Step 3: Identify forced splits
-# If same value exists across more than one original parent → it becomes its own group candidate
-forced_singletons = {v for v, rows in value_to_dep_map.items() if len(rows) > 1}
+    # Step 3: Identify forced splits
+    # If same value exists across more than one original parent → it becomes its own group candidate
+    forced_singletons = {v for v, rows in value_to_dep_map.items() if len(rows) > 1}
 
-# Step 4: Make buckets
-groups = {}
-appearance_order = 0
+    # Step 4: Make buckets
+    groups = {}
+    appearance_order = 0
 
-for entry in flat:
+    for entry in flat:
 
-    if entry["value"] in forced_singletons:
-        # force isolate - value belongs to another option too
-        key = ("FORCE", entry["value"], entry["deps_key"])
-    else:
-        # merge key rule: only dependents must match
-        key = ("NORMAL", entry["deps_key"])
+        if entry["value"] in forced_singletons:
+            # force isolate - value belongs to another option too
+            key = ("FORCE", entry["value"], entry["deps_key"])
+        else:
+            # merge key rule: only dependents must match
+            key = ("NORMAL", entry["deps_key"])
 
-    if key not in groups:
-        groups[key] = {
-            "names": [],
-            "values": [],
-            "dependents": entry["dependents"],
-            "order": appearance_order
-        }
-        appearance_order += 1
+        if key not in groups:
+            groups[key] = {
+                "names": [],
+                "values": [],
+                "dependents": entry["dependents"],
+                "order": appearance_order
+            }
+            appearance_order += 1
 
-    groups[key]["names"].append(entry["name"])
-    groups[key]["values"].append(entry["value"])
+        groups[key]["names"].append(entry["name"])
+        groups[key]["values"].append(entry["value"])
 
     # Step 3: build new <dependents> root using grouped data in stable order
     # Sort groups by first_appearance so we keep stable ordering
